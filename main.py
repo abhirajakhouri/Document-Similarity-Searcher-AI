@@ -1,5 +1,4 @@
-import pandas as pd
-from fastapi import FastAPI
+from fastapi import FastAPI, Form
 from pydantic import BaseModel
 from transformers import AutoModel, AutoTokenizer
 import faiss
@@ -10,18 +9,7 @@ import os
 # Initialize FastAPI app
 app = FastAPI()
 
-# Step 1: Load the Blog Authorship Corpus dataset
-file_path = r"C:\IIT-K\IITK_Acads\Intern\Task\GIVA\archive\blogtext.csv"
-
-# Load the CSV file into a pandas DataFrame
-data = pd.read_csv(file_path)
-
-# Extract the blog text column (assuming it's named 'text')
-documents = data['text'].tolist()
-
-print(f"Loaded {len(documents)} blog posts.")
-
-# Step 2: Load pre-trained model and tokenizer for embeddings
+# Load pre-trained model and tokenizer for embeddings
 model_name = "sentence-transformers/all-MiniLM-L6-v2"
 model = AutoModel.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -33,39 +21,72 @@ def convert_to_embeddings(texts):
     embeddings = outputs.last_hidden_state[:, 0, :].detach().numpy()
     return embeddings
 
-# Step 3: Create FAISS index and add embeddings
-index = faiss.IndexFlatL2(384)  # Assuming embedding size is 384
-
-# Convert documents to embeddings and add them to FAISS index
-embeddings = convert_to_embeddings(documents)
-index.add(embeddings)
-
-print("FAISS index created and embeddings added.")
-
-# Step 4: Connect to Supabase database (use environment variables for credentials)
+# Connect to Supabase database using environment variables
 conn = psycopg2.connect(
-    database=os.environ.get("SUPABASE_DB"),
-    user=os.environ.get("SUPABASE_USER"),
-    password=os.environ.get("SUPABASE_PASSWORD"),
-    host=os.environ.get("SUPABASE_HOST"),
-    port=os.environ.get("SUPABASE_PORT")
+    database=os.environ.get("SUPABASE_DB"),  # Supabase database name
+    user=os.environ.get("SUPABASE_USER"),    # Supabase username
+    password=os.environ.get("SUPABASE_PASSWORD"),  # Supabase password
+    host=os.environ.get("SUPABASE_HOST"),    # Supabase host URL
+    port="5432",                             # Default PostgreSQL port
+    sslmode="require"                        # Enable SSL for secure connection
 )
 
 cur = conn.cursor()
 
-# Insert documents into Supabase database (if not already done)
-for doc in documents:
-    cur.execute("INSERT INTO documents (text) VALUES (%s)", (doc,))
-conn.commit()
-print("Documents inserted into Supabase database.")
+# Fetch documents from Supabase database during initialization
+cur.execute("SELECT text FROM documents")  # Assuming 'text' column contains combined 'headline' and 'short_description'
+documents = [row[0] for row in cur.fetchall()]
+print(f"Fetched {len(documents)} documents from Supabase.")
 
-# Step 5: Define API endpoints
+# Create FAISS index and add embeddings (default: L2 metric)
+index = faiss.IndexFlatL2(384)  # Assuming embedding size is 384 (adjust based on your embedding model)
+embeddings = convert_to_embeddings(documents)
+index.add(embeddings)
+print("FAISS index created and embeddings added.")
+
 class Query(BaseModel):
     query: str
 
 @app.post("/api/search")
-async def search(query: Query):
-    """Search for similar documents."""
-    query_embedding = convert_to_embeddings([query.query])[0]
-    D, I = index.search(np.array([query_embedding]), k=5)
+async def search(
+    query: str = Form(...), 
+    similarity_metric: str = Form(default="L2")
+):
+    """Search for similar documents based on the specified similarity metric."""
+    
+    # Handle similarity metric selection
+    if similarity_metric == "L2":
+        index_metric = faiss.IndexFlatL2(384)  # L2 distance metric (default)
+    elif similarity_metric == "cosine":
+        index_metric = faiss.IndexFlatIP(384)  # Cosine similarity metric (inner product)
+    else:
+        return {"error": f"Unsupported similarity metric: {similarity_metric}"}
+    
+    # Convert query to embedding and perform search
+    query_embedding = convert_to_embeddings([query])[0]
+    D, I = index.search(np.array([query_embedding]), k=5)  # Top 5 similar documents
+    
     similar_documents = [documents[i] for i in I[0]]
+    
+    return {
+        "similar_documents": similar_documents,
+        "similarity_metric": similarity_metric,
+        "distances": D.tolist()
+    }
+
+@app.post("/api/add_document")
+async def add_document(document: str):
+    """Add a new document to FAISS index and Supabase database."""
+    
+    new_embedding = convert_to_embeddings([document])[0]
+    index.add(np.array([new_embedding]))
+    
+    # Add document to Supabase database
+    cur.execute("INSERT INTO documents (text) VALUES (%s)", (document,))
+    conn.commit()
+    
+    return {"message": "Document added successfully"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
