@@ -28,8 +28,6 @@ try:
         sslmode="require"                        # Enable SSL for secure connection
     )
     print("Connection to Supabase database successful!")
-    cur.execute("SELECT * FROM documents")  # documents is table name
-    rows = cur.fetchall()
     
     # Fetch data from the table 
     cur = conn.cursor()
@@ -37,7 +35,7 @@ try:
     rows = cur.fetchall()
 
 # Step 2: Load pre-trained model and tokenizer for embeddings
-model_name = "sentence-transformers/all-MiniLM-L6-v2"
+model_name = "sentence-transformers/all-MiniLM-L6-v2"   ####FLAG###
 model = AutoModel.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
