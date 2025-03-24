@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+transformers
+faiss-cpu
+psycopg2-binary
+torch
+pandas
+numpy
